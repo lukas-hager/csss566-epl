@@ -1,13 +1,18 @@
 
 
 rm(list = ls())
+# Libraries
+{
 if(!require("geosphere")){install.packages("geosphere")}
+if(!require("zoo")){install.packages("zoo")}
 library(data.table)
 library(rmarkdown)
 library(janitor)
 library(tidyverse)
 library(lubridate)
 library(geosphere)
+library(zoo)
+}
 
 final_dataset <- read_csv("Datasets/final_dataset.csv")%>% 
   janitor::clean_names() %>% 
@@ -367,7 +372,58 @@ data_midweek <- data_midweek %>%
          at_short_week = if_else(at_games_week > 1, 1, 0))
 
 
-write_csv(data_midweek, "data_midweek.csv")
+
+
+# We are going to add rolling means for the last 4 games for the next variables (for both home and away teams):
+# shots, shots on target, goals, corners, fouls, yellow cards and red cards. 
+
+# Notice that each team will have a rolling mean for when it's playing home and one for when it is playing away
+
+data_midweek <- data_midweek %>% 
+#  filter(season == "2007-08") %>% 
+  arrange(date) %>% 
+  group_by(season, home_team) %>% 
+  mutate(
+    # Cumulative values
+    cs_hs = cumsum(hs), # shots
+    cs_as = cumsum(as),
+    cs_hst = cumsum(hst), # shots on target
+    cs_ast = cumsum(ast),
+    cs_fthg = cumsum(fthg), # goals
+    cs_ftag = cumsum(ftag),
+    cs_hc = cumsum(hc), # corners
+    cs_ac = cumsum(ac),
+    cs_hf = cumsum(hf), # fouls
+    cs_af = cumsum(af),
+    cs_hy = cumsum(hy), # yellow cards
+    cs_ay = cumsum(ay),
+    cs_hr = cumsum(hr), # red cards
+    cs_ar = cumsum(ar),
+    # Rolling means
+    rm_hs = (cs_hs - lag(cs_hs, 4))/4,
+    rm_as = (cs_as - lag(cs_as, 4))/4,
+    rm_hst = (cs_hst - lag(cs_hst, 4))/4,
+    rm_ast = (cs_ast - lag(cs_ast, 4))/4,
+    rm_fthg = (cs_fthg - lag(cs_fthg, 4))/4,
+    rm_ftag = (cs_ftag - lag(cs_ftag, 4))/4,
+    rm_hc = (cs_hc - lag(cs_hc, 4))/4,
+    rm_ac = (cs_ac - lag(cs_ac, 4))/4,
+    rm_hf = (cs_hf - lag(cs_hf, 4))/4,
+    rm_af = (cs_af - lag(cs_af, 4))/4,
+    rm_hy = (cs_hy - lag(cs_hy, 4))/4,
+    rm_ay = (cs_ay - lag(cs_ay, 4))/4,
+    rm_hr = (cs_hr - lag(cs_hr, 4))/4,
+    rm_ar = (cs_ar - lag(cs_ar, 4))/4) %>% 
+  ungroup() %>% 
+  select(-starts_with("cs_"))
+
+# Finally, we select only the variables we care about and save it
+
+data_midweek_final <- data_midweek %>% 
+  select(-ht_lat, -at_lat, -ht_long, -at_long, -week, -ht_games_week, -at_games_week)
+
+
+write_csv(data_midweek_final, "data_midweek_final.csv")
 
 
 # Weekends: Saturdays (7), Sundays (1) and Mondays (2)
@@ -375,8 +431,9 @@ data_midweek %>%
   group_by(midweek) %>% tally()
 
 data_midweek %>% 
-  group_by(midweek) %>% 
+  group_by(midweek, season) %>% 
   summarize(APH = mean(points_home),
-            APA = mean(points_away))
+            APA = mean(points_away)) %>% 
+  arrange(season)
 
-# We will use the transfermarkt data to complete the analysis
+
