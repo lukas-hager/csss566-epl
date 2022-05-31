@@ -105,3 +105,68 @@ data_midweek %>%
   ungroup() %>% 
   pull(total_midweek) %>% 
   summary()
+
+
+
+
+# There seems to be a difference in the % of matches each team 
+# played midweek as host
+data_midweek %>% 
+  group_by(home_team, midweek) %>% 
+  tally() %>%
+  ungroup() %>% spread(key = midweek, value = n) %>% 
+  mutate(percentage_mw = `1`/(`1` + `0`)*100) %>% 
+  arrange(desc(percentage_mw)) %>% View()
+
+data_midweek %>% 
+  group_by(home_team, midweek, season) %>% 
+  tally() %>%
+  ungroup() %>% spread(key = midweek, value = n) %>% 
+  mutate(percentage_mw = `1`/(`1` + `0`)*100) %>% 
+  arrange(desc(percentage_mw)) %>% View()
+
+
+# Midweek assignation does not seem to be randomly assigned after all 
+
+
+# We are going to assume conditional independence between X (midweek games)
+# and the outcome Y (points)
+
+# Now, we do not now exactly how the assignment is made, only that it takes into account:
+# - International matches
+# - Christmas day (Boxing Day matches and New Year)
+
+data_midweek <- data_midweek %>% 
+  mutate(Holidays = case_when(
+    (month(date) == 12 & day(date)>=25) | (month(date) == 1 & day(date) <= 2) ~ 1,
+    TRUE ~0
+  ))
+
+# We are going to define the set Z as acn, before_national_comps, after_national_comps, 
+# ln_capacity, distance and Holidays in order to estimate P(X|Z) and then apply IPW
+
+
+XZmodel <- glm(as.factor(midweek) ~ as.factor(acn) + as.factor(before_national_comps) + 
+                 as.factor(after_national_comps) + 
+                 ln_capacity + distance + as.factor(Holidays) , 
+               family = "binomial",
+               data = data_midweek)
+
+summary(XZmodel)
+
+
+# What to do with all the non-significant variables?
+# Should we do variable selection first?
+# When should we consider second order terms and interactions?
+
+
+pX_Z <- ifelse(data_midweek$midweek == 0, 1 - predict(XZmodel, type = "response"),
+               predict(XZmodel, type = "response"))
+
+
+data_midweek$w <- 1/pX_Z
+
+
+# We now try to estimate the ACE using these weights 
+
+
