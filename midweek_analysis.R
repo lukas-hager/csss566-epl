@@ -9,8 +9,8 @@
 
 rm(list = ls())
 {
-  library(tidyverse)
   library(lubridate)
+  library(tidyverse)
 }
 
 
@@ -107,8 +107,6 @@ data_midweek %>%
   summary()
 
 
-
-
 # There seems to be a difference in the % of matches each team 
 # played midweek as host
 data_midweek %>% 
@@ -170,3 +168,112 @@ data_midweek$w <- 1/pX_Z
 # We now try to estimate the ACE using these weights 
 
 
+# We want to look at the point differential by home vs away
+
+data_midweek %>%
+  select(date, season, points_home, points_away) %>% 
+  pivot_longer(points_home:points_away) %>% 
+  mutate(team = str_extract(name, '(home)|(away)')) %>% 
+  group_by(team, season) %>% 
+  summarise(mean_points = mean(value)) %>% 
+  ungroup() %>% 
+  pivot_wider(id_cols = season,
+              names_from = team, 
+              values_from = mean_points) %>% 
+  arrange(season) %>% 
+  mutate(home_team_adv = home - away)
+
+# Point differential midweek by season
+
+data_midweek %>%
+  select(date, season, midweek, points_home, points_away) %>% 
+  pivot_longer(points_home:points_away) %>% 
+  mutate(team = str_extract(name, '(home)|(away)')) %>% 
+  group_by(team, season, midweek) %>% 
+  summarise(mean_points = mean(value)) %>% 
+  ungroup() %>% 
+  pivot_wider(id_cols = c(season,midweek),
+              names_from = team, 
+              values_from = mean_points) %>% 
+  arrange(season) %>% 
+  mutate(home_team_adv = home - away,
+         midweek = ifelse(midweek == 1, 'is_midweek', 'is_not_midweek')) %>% 
+  select(-home, -away) %>% 
+  pivot_wider(id_cols = season,
+              names_from = midweek,
+              values_from = home_team_adv) %>% 
+  mutate(midweek_change = is_midweek - is_not_midweek)
+
+# Point differential by team by midweek
+
+points_by_midweek <- data_midweek %>%
+  mutate(id_val = row_number()) %>% 
+  select(id_val, home_team, away_team) %>% 
+  pivot_longer(home_team:away_team) %>% 
+  mutate(name = str_extract(name, '(home)|(away)')) %>% 
+  rename(team = value) %>% 
+  left_join(data_midweek %>% 
+              mutate(id_val = row_number()) %>% 
+              select(id_val, midweek, points_home, points_away) %>% 
+              pivot_longer(points_home:points_away) %>% 
+              mutate(name = str_extract(name, '(home)|(away)')) %>% 
+              rename(points = value),
+            by = c('id_val', 'name')) %>% 
+  group_by(name, team, midweek) %>% 
+  summarise(mean_points = mean(points)) %>% 
+  ungroup() %>% 
+  mutate(midweek = ifelse(midweek == 1, 'is_midweek', 'is_not_midweek')) %>% 
+  pivot_wider(id_cols = c(team,name), names_from = midweek, values_from = mean_points) %>% 
+  filter(name == 'home') %>% 
+  mutate(diff = is_not_midweek - is_midweek) %>% 
+  arrange(desc(diff)) %>% 
+  left_join(data_midweek %>% 
+              group_by(home_team) %>% 
+              summarise(n_midweek = sum(midweek)) %>% 
+              ungroup() %>% 
+              rename(team = home_team),
+            by = 'team') 
+
+points_by_midweek <- points_by_midweek %>% 
+  mutate(team = factor(team, levels = points_by_midweek$team))
+
+ggplot(data = points_by_midweek) + 
+  geom_col(aes(x = team, y = diff, fill =n_midweek)) + 
+  theme(axis.text.x = element_text(angle = 90))
+  
+
+pivot_longer(home_team:points_away) %>% 
+  mutate(team = str_extract(name, '(home)|(away)')) %>% 
+  group_by(team, season, midweek) %>% 
+  summarise(mean_points = mean(value)) %>% 
+  ungroup() %>% 
+  pivot_wider(id_cols = c(season,midweek),
+              names_from = team, 
+              values_from = mean_points) %>% 
+  arrange(season) %>% 
+  mutate(home_team_adv = home - away,
+         midweek = ifelse(midweek == 1, 'is_midweek', 'is_not_midweek')) %>% 
+  select(-home, -away) %>% 
+  pivot_wider(id_cols = season,
+              names_from = midweek,
+              values_from = home_team_adv) %>% 
+  mutate(midweek_change = is_midweek - is_not_midweek)
+
+# Percentage of matches played midweek by team
+
+data_midweek %>% 
+  select(season, date,home_team, away_team, midweek) %>% 
+  pivot_longer(home_team:away_team) %>% 
+  mutate(name = str_extract(name, '(home)|(away)')) %>% 
+  group_by(name, value) %>% 
+  summarise(n_midweek = sum(midweek),
+            n_weekend = sum(1-midweek)) %>% 
+  ungroup() %>% 
+  group_by(value) %>% 
+  mutate(midweek_perc = n_midweek / (sum(n_midweek) + sum(n_weekend))) %>% 
+  select(-n_midweek, -n_weekend) %>% 
+  pivot_wider(id_cols = value, names_from = name, values_from = midweek_perc) %>% 
+  rename(away_midweek_match_perc = away,
+         home_midweek_match_perc = home) %>% 
+  mutate(total_midweek_match_perc = home_midweek_match_perc + away_midweek_match_perc) %>% 
+  arrange(desc(total_midweek_match_perc))

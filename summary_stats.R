@@ -435,5 +435,3 @@ data_midweek %>%
   summarize(APH = mean(points_home),
             APA = mean(points_away)) %>% 
   arrange(season)
-
-
