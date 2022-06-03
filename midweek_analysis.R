@@ -9,8 +9,11 @@
 
 rm(list = ls())
 {
+  if(!require("glmnet")){install.packages("glmnet")}
+  
   library(tidyverse)
   library(lubridate)
+  library(glmnet)
 }
 
 
@@ -162,11 +165,7 @@ XZmodel <- glm(as.factor(midweek) ~ as.factor(acn) + as.factor(before_national_c
 
 summary(XZmodel)
 
-data_midweek %>% 
-  filter(midweek == 1) %>% 
-  group_by(month(date), season) %>% 
-  tally() %>%
-  spread(key = `month(date)`, value = n)
+
 # What to do with all the non-significant variables?
 # Should we do variable selection first?
 # When should we consider second order terms and interactions?
@@ -316,7 +315,9 @@ reg_adjusted2 <- lm(y2 ~ midweek + pz + diff_rm_exp_points,
                    data = data_midweek2)
 summary(reg_adjusted2)
 
-
+reg_adjusted2 <- lm(y2 ~ midweek + diff_rm_exp_points, 
+                    data = data_midweek2, weights = w)
+summary(reg_adjusted2)
 
 
 
@@ -429,3 +430,195 @@ data_midweek %>%
          home_midweek_match_perc = home) %>% 
   mutate(total_midweek_match_perc = home_midweek_match_perc + away_midweek_match_perc) %>% 
   arrange(desc(total_midweek_match_perc))
+
+
+# ---------------------------- MODEL PROPOSAL ------------------------------------
+
+data_midweek %>% 
+  group_by(month(date), season) %>% 
+  summarize(n = n(), 
+            mw = sum(midweek),
+            p = mw*100/n) %>% 
+  select(-n, -mw) %>% 
+  spread(key = `month(date)`, value = p)
+
+
+### Idea : 
+# 1st of all, Bundesliga teams play fewer matches (34) than the english squads (38)
+# We adjusted for international tournaments, but most of them happen during the summer, 
+# so they affect the beginning of the season at most. We could consider the African Nations
+# Cup can affect, but  we would see its effect only every 4 years during January.
+# We have already seen that most of the midweek games take place during December - Febdruary in 
+# EVERY season. Why can this be? Well, the 1st division english teams have to play de EPL and two cups:
+# the FA cup and the EPL (Carabo) cup. The first one of these has most of its game (for 1st division teams)
+# from January to February (https://en.wikipedia.org/wiki/FA_Cup#Qualification_for_subsequent_competitions) and 
+# the second one has its last stages during December - January (https://en.wikipedia.org/wiki/2021%E2%80%9322_EFL_Cup#Quarter-finals)
+# Moreover, the EPL plays matches every year on Boxing Day (December 26th) and New Year's
+# This explains that there is a saturated calendar for EPL teams from December - February, so the league 
+# has less available weekends to accommodate games (either because teams are playing other competitions or because
+# they just played a match), an hence it makes use of midweeks to plan games.
+
+# In that sense, let's make a regression for propensity score only on december - feb and on distance between cities
+# (if I have to travel long distances, I would expect the EPL to not make me play midweek)
+
+data_og <- bind_rows(
+  lapply(list.files('Datasets',
+                    full.names = TRUE,
+                    pattern = '\\d{4}\\-\\d{2}\\.csv'),
+         read_csv,
+         col_types = cols())
+) %>% 
+  janitor::clean_names() %>% 
+  mutate(date = as.Date(date, '%d/%m/%y'))
+
+
+win_probabilities <- data_og %>% 
+  select(div:bsa) %>% 
+  pivot_longer(b365h:bsa) %>% 
+  mutate(pred_result = str_sub(name, -1),
+         bookmaker = str_sub(name, 1, -2),
+         value = 1/value) %>% 
+  select(-name) %>% 
+  pivot_wider(names_from = pred_result,
+              values_from = value) %>% 
+  filter(!is.na(h)) %>% 
+  mutate(sum_probs = h + d + a,
+         h = h/sum_probs,
+         d = d/sum_probs, 
+         a = a/sum_probs) %>% 
+  group_by(date, home_team, away_team) %>% 
+  summarize(h = mean(h),
+            a = mean(a),
+            d = mean(d)) %>% 
+  ungroup() %>% 
+  mutate(expected_points_ht = 3*h, 
+         expected_points_at = 3*a)
+
+
+data_midweek <- data_midweek %>% 
+  left_join(
+    win_probabilities, 
+    by = c("date", "home_team", "away_team")
+  )
+
+# We now do the rolling means of the expected points for all teams for their last 4 previous matches
+
+dm2 <- data_midweek %>% 
+  filter(!is.na(expected_points_ht)) %>% 
+  pivot_longer(home_team:away_team) %>% 
+  rename(team = value) %>% 
+  mutate(exp_points = if_else(name == "away_team", expected_points_at, 
+                              expected_points_ht)) %>% 
+  group_by(season, team) %>% 
+  arrange(date) %>% 
+  mutate(cumulative_exp_points = cumsum(exp_points), 
+         rm_exp_points = (cumulative_exp_points - lag(cumulative_exp_points, 4))/4) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = name, 
+              values_from = team) %>% 
+  select(date, season, home_team, away_team, rm_exp_points)
+
+
+data_midweek <- data_midweek %>% 
+  left_join(dm2 %>% select(-away_team) %>% 
+              filter(!is.na(home_team)), 
+            by = c("date", "season", "home_team")) %>% 
+  rename(rm_exp_points_ht = rm_exp_points) %>% 
+  left_join(dm2 %>% select(-home_team) %>% 
+              filter(!is.na(away_team)), 
+            by = c("date", "season", "away_team")) %>% 
+  rename(rm_exp_points_at = rm_exp_points) %>% 
+  mutate(dec_feb = if_else(month(date) %in% c(1, 2, 12), 1, 0))
+
+rm(data_og)
+
+data_midweek <- data_midweek2 %>% filter(!is.na(rm_exp_points_at), !is.na(rm_exp_points_ht)) %>% 
+  mutate(
+    diff_rm_exp_points = rm_exp_points_ht - rm_exp_points_at # This is our proxy for team strength 
+  )
+
+rm(dm2)
+
+mean(data_midweek$dec_feb)
+
+modZ <- glm(midweek ~ as.factor(dec_feb) + distance, 
+          family = "binomial",
+          data = data_midweek)
+summary(modZ)
+
+# These results make sense: having a game between december and february increases the odds
+# of playing a midweek game in 
+exp(coef(modZ)[2])
+# While increasing 1 km of distance between cities decreases the odds of playing a midweek game 
+#in
+exp(coef(modZ)[1])
+
+pZ <- ifelse(data_midweek$midweek == 0, 1 - predict(modZ, type = "response"),
+               predict(modZ, type = "response"))
+
+# Let's compute the basic ATE using IPW as well as the stable IPW and a weighted regression
+# adjusting for team strength (diff_rm_exp_points)
+
+data_midweek <- data_midweek %>% 
+  mutate(ht_outcome = if_else(fthg > ftag, 1, 0),
+         ht_points = case_when(
+           fthg > ftag ~ 3, 
+           fthg < ftag ~ 0, 
+           TRUE ~ 1
+         ))
+
+pX1 <- mean(data_midweek$midweek) 
+pX0 <- 1 - pX1
+
+x <- data_midweek$midweek
+
+stable.weights <- x*pX1/pZ + (1-x)*pX0/(1-pZ)
+mean(stable.weights) # This might be a problem
+
+# Outcome: home team wins 
+y_winner <- data_midweek$ht_outcome
+mean(x*y_winner/pZ - (1-x)*y_winner/(1-pZ)) # IPW estimator
+sum(x*y_winner/pZ)/sum(x/pZ) - sum((1-x)*y_winner/(1-pZ))/sum((1-x)/(1-pZ)) # modified IPW estimator
+reg.y_winner <- glm(as.factor(ht_outcome) ~ midweek + diff_rm_exp_points, # Regression estimator
+                    data = data_midweek, 
+                    family = "binomial",
+                    weights = 1/pZ)
+summary(reg.y_winner) ## ! negative coefficient on midweek but nos significative
+m <- coef(reg.y_winner)[2]
+exp(m)
+
+
+#Outcome: points
+y_points <- data_midweek$ht_points
+mean(x*y_points/pZ - (1-x)*y_points/(1-pZ)) # IPW estimator
+sum(x*y_points/pZ)/sum(x/pZ) - sum((1-x)*y_points/(1-pZ))/sum((1-x)/(1-pZ)) # modified IPW estimator
+reg.y_points <- glm(ht_points ~ midweek + diff_rm_exp_points, # Regression estimator
+                    data = data_midweek, 
+                    weights = 1/pZ)
+summary(reg.y_points) ## ! negative coefficient on midweek but nos significative
+m <- coef(reg.y_points)[2]
+exp(m)
+
+#Outcome: goals
+y_goals <- data_midweek$fthg
+mean(x*y_goals/pZ - (1-x)*y_goals/(1-pZ)) # IPW estimator
+sum(x*y_goals/pZ)/sum(x/pZ) - sum((1-x)*y_goals/(1-pZ))/sum((1-x)/(1-pZ)) # modified IPW estimator
+reg.y_goals <- glm(fthg ~ midweek + diff_rm_exp_points, # Regression estimator
+                    data = data_midweek, 
+                    weights = 1/pZ)
+summary(reg.y_goals) ## !! Mildly significative for goals
+m <- coef(reg.y_goals)[2]
+exp(m)
+
+
+# Outcome: yellow cards
+y_yc <- data_midweek$hy
+mean(x*y_yc/pZ - (1-x)*y_yc/(1-pZ)) # IPW estimator
+sum(x*y_yc/pZ)/sum(x/pZ) - sum((1-x)*y_yc/(1-pZ))/sum((1-x)/(1-pZ)) # modified IPW estimator
+reg.y_yc <- glm(hy ~ midweek + diff_rm_exp_points, # Regression estimator
+                   data = data_midweek, 
+                   weights = 1/pZ)
+summary(reg.y_yc) ## !! Mildly significative for yc
+m <- coef(reg.y_yc)[2]
+exp(m)
+
