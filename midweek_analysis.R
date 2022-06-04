@@ -10,10 +10,16 @@
 rm(list = ls())
 {
   if(!require("glmnet")){install.packages("glmnet")}
+  if(!require("stargazer")){install.packages("stargazer")}
+  if(!require("knitr")){install.packages("knitr")}
+  if(!require("CausalGAM")){install.packages("CausalGAM")}
   
   library(tidyverse)
   library(lubridate)
   library(glmnet)
+  library(stargazer)
+  library(knitr)
+  library(CausalGAM)
 }
 
 
@@ -434,13 +440,33 @@ data_midweek %>%
 
 # ---------------------------- MODEL PROPOSAL ------------------------------------
 
-data_midweek %>% 
-  group_by(month(date), season) %>% 
+proportions_month <- data_midweek %>% 
+  filter(! season %in% c("2007-08", "2008-09")) %>% 
+  group_by(month(date, label = T), season) %>% 
   summarize(n = n(), 
             mw = sum(midweek),
-            p = mw*100/n) %>% 
+            p = round(mw*100/n, 2)) %>% 
   select(-n, -mw) %>% 
-  spread(key = `month(date)`, value = p)
+  spread(key = `month(date, label = T)`, value = p)
+
+names(proportions_month)[1] <- "Season"
+
+kable(proportions_month, "latex", 
+      caption = "Proportion of EPL games that take place during midweek per month and season",
+      position = "H",
+      digits = 4,
+      booktabs = T)
+
+
+data_midweek %>% 
+  filter(! season %in% c("2007-08", "2008-09"),
+         midweek == 1) %>% 
+  group_by(month(date, label = T), season) %>% 
+  summarize(n = n()) %>% 
+  spread(key = `month(date, label = T)`, value = n)
+
+
+# Outcomes of home teams as 
 
 
 ### Idea : 
@@ -528,20 +554,21 @@ data_midweek <- data_midweek %>%
               filter(!is.na(away_team)), 
             by = c("date", "season", "away_team")) %>% 
   rename(rm_exp_points_at = rm_exp_points) %>% 
-  mutate(dec_feb = if_else(month(date) %in% c(1, 2, 12), 1, 0))
+  mutate(dec_mar = if_else(month(date) %in% c(1, 2,3,  12), 1, 0))
 
 rm(data_og)
 
-data_midweek <- data_midweek2 %>% filter(!is.na(rm_exp_points_at), !is.na(rm_exp_points_ht)) %>% 
+data_midweek <- data_midweek %>% 
+  filter(!is.na(rm_exp_points_at), !is.na(rm_exp_points_ht)) %>% 
   mutate(
     diff_rm_exp_points = rm_exp_points_ht - rm_exp_points_at # This is our proxy for team strength 
   )
 
 rm(dm2)
 
-mean(data_midweek$dec_feb)
+mean(data_midweek$dec_mar)
 
-modZ <- glm(midweek ~ as.factor(dec_feb) + distance, 
+modZ <- glm(midweek ~ as.factor(dec_mar) + distance, 
           family = "binomial",
           data = data_midweek)
 summary(modZ)
@@ -556,6 +583,33 @@ exp(coef(modZ)[1])
 pZ <- ifelse(data_midweek$midweek == 0, 1 - predict(modZ, type = "response"),
                predict(modZ, type = "response"))
 
+# Are these probabilities well calibrated?
+
+
+pZ_cal <- case_when(
+  pZ <= 0.05 ~ 0.05,
+  pZ <= 0.10 ~ 0.1,
+  pZ <= 0.15 ~ 0.15,
+  pZ <= 0.20 ~ 0.20,
+  pZ <= 0.25 ~ 0.25,
+  pZ <= 0.30 ~ 0.30,
+  pZ <= 0.35 ~ 0.35,
+  pZ <= 0.40 ~ 0.40,
+  pZ <= 0.45 ~ 0.45,
+  pZ <= 0.50 ~ 0.50,
+  pZ <= 0.55 ~ 0.55,
+  pZ <= 0.60 ~ 0.60,
+  pZ <= 0.65 ~ 0.65,
+  pZ <= 0.70 ~ 0.70,
+  pZ <= 0.75 ~ 0.75,
+  pZ <= 0.80 ~ 0.80,
+  pZ <= 0.85 ~ 0.85,
+  pZ <= 0.90 ~ 0.90,
+  pZ <= 0.95 ~ 0.95,
+  TRUE ~ 1
+)
+
+  
 # Let's compute the basic ATE using IPW as well as the stable IPW and a weighted regression
 # adjusting for team strength (diff_rm_exp_points)
 
@@ -563,8 +617,8 @@ data_midweek <- data_midweek %>%
   mutate(ht_outcome = if_else(fthg > ftag, 1, 0),
          ht_points = case_when(
            fthg > ftag ~ 3, 
-           fthg < ftag ~ 0, 
-           TRUE ~ 1
+           fthg < ftag ~ - 3, # We want point differential (as in Lopez' code)
+           TRUE ~ 0
          ))
 
 pX1 <- mean(data_midweek$midweek) 
@@ -590,14 +644,113 @@ exp(m)
 
 #Outcome: points
 y_points <- data_midweek$ht_points
+mean(y_points[x == 1]) - mean(y_points[x == 0]) # Naive estimator
 mean(x*y_points/pZ - (1-x)*y_points/(1-pZ)) # IPW estimator
 sum(x*y_points/pZ)/sum(x/pZ) - sum((1-x)*y_points/(1-pZ))/sum((1-x)/(1-pZ)) # modified IPW estimator
 reg.y_points <- glm(ht_points ~ midweek + diff_rm_exp_points, # Regression estimator
                     data = data_midweek, 
                     weights = 1/pZ)
 summary(reg.y_points) ## ! negative coefficient on midweek but nos significative
-m <- coef(reg.y_points)[2]
-exp(m)
+mcoef <- coef(reg.y_points)[2]
+exp(mcoef)
+
+### Using double robust estimators
+
+mod_cond_exp <- lm(ht_points ~ midweek + dec_mar  + diff_rm_exp_points, 
+                   data = data_midweek, 
+                   weights = 1/pZ)
+summary(mod_cond_exp)
+coefs <- coef(mod_cond_exp)
+
+dm0 <- data.frame(
+  int = 1,
+  x = 0,
+  data_midweek$dec_mar, 
+  data_midweek$diff_rm_exp_points
+)
+
+dm1 <- data.frame(
+  int = 1,
+  x = 1,
+  data_midweek$dec_mar, 
+  data_midweek$diff_rm_exp_points
+)
+
+m0 <- t(coefs) %*% t(as.matrix(dm0))
+m1 <- t(coefs) %*% t(as.matrix(dm1))
+
+E_Y1 <- mean(((x*y_points) - (x - pZ)*m0)/pZ)
+E_Y0 <- mean((((1-x)*y_points) - (x - pZ)*m1)/(1-pZ))
+
+E_Y1 - E_Y0
+
+### bootstrapping 
+
+nsim <-1e4
+
+data_midweek$w = 1/pZ
+
+naive_est <- numeric(nsim)
+IPW_est <- numeric(nsim)
+reg_est <- numeric(nsim)
+dr_est <- numeric(nsim)
+
+for(i in 1:nsim){
+  
+  # We resample the data frame
+  
+  indeces <- sample(1:nrow(data_midweek), size = nrow(data_midweek), 
+                    replace = T)
+  
+  dat <- data_midweek[indeces, ]
+  
+  x <- dat$midweek
+  y <- dat$ht_points
+  w <- dat$w
+  
+  # Naive estimator
+  naive_est[i] <- mean(y[x == 1]) - mean(y[x == 0]) 
+  # IPW estimator
+  IPW_est[i] <- mean(x*y*w - (1-x)*y*(1-w)) 
+  
+  mod <- lm(ht_points ~ midweek + dec_mar  + diff_rm_exp_points, 
+            data = dat, 
+            weights = w)
+  # regression estimator
+  reg_est[i] <- coef(mod)[[2]]
+  
+  # double robust est
+  
+  coefs <- coef(mod)
+  
+  dm0 <- data.frame(
+    int = 1,
+    x = 0,
+    dat$dec_mar, 
+    dat$diff_rm_exp_points
+  )
+  
+  dm1 <- data.frame(
+    int = 1,
+    x = 1,
+    dat$dec_mar, 
+    dat$diff_rm_exp_points
+  )
+  
+  m0 <- t(coefs) %*% t(as.matrix(dm0))
+  m1 <- t(coefs) %*% t(as.matrix(dm1))
+  
+  E_Y1 <- mean(((x*y) - (x - 1/w)*m0)*w)
+  E_Y0 <- mean((((1-x)*y) - (x - 1/w)*m1)/(1-1/w))
+  
+  dr_est[i] <- E_Y1 - E_Y0
+  
+  }
+
+summary(naive_est) # no effect
+summary(IPW_est) #small effect
+summary(reg_est) # no effect
+summary(dr_est) # large negative effect
 
 #Outcome: goals
 y_goals <- data_midweek$fthg
