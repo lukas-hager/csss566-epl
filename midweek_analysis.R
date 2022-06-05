@@ -429,3 +429,32 @@ data_midweek %>%
          home_midweek_match_perc = home) %>% 
   mutate(total_midweek_match_perc = home_midweek_match_perc + away_midweek_match_perc) %>% 
   arrange(desc(total_midweek_match_perc))
+
+midweek_frequency <- data_midweek %>% 
+  select(season, date,home_team, away_team, midweek) %>% 
+  pivot_longer(home_team:away_team) %>% 
+  group_by(value) %>% 
+  summarise(n_midweek = sum(midweek),
+            n = n()) %>% 
+  ungroup() %>% 
+  mutate(midweek_perc = n_midweek / n) %>% 
+  arrange(desc(midweek_perc))
+
+midweek_frequency <- midweek_frequency %>% 
+  mutate(value = factor(value, levels = midweek_frequency$value))
+
+ggplot(midweek_frequency) + 
+  geom_col(aes(x = value, y = midweek_perc, fill = n)) + 
+  geom_hline(yintercept = sum(midweek_frequency$n_midweek) / sum(midweek_frequency$n), 
+             linetype = 'dashed', color = 'red') + 
+  scale_y_continuous(labels = scales::percent) + 
+  theme_bw() + 
+  labs(y = 'Midweek Matches\nPercentage',
+       fill = 'Total Matches\nPlayed',
+       title = 'Assignment of Midweek Matches Varies by Club') + 
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_blank())
+
+ggsave('/Users/hlukas/Google Drive/Grad School/2021-2022/Spring/CSSS 566/Project/Graphs/midweek_match_percentage.png',
+       width = 6,
+       height = 4)
