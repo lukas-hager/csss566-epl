@@ -110,6 +110,28 @@ calibration.gbm %>%
        x = "Observed relative frecuencies of midweek games")
 # Not that bad 
 
+test.opA %>% 
+  mutate(pred = predict(model.gbm, newdata = test.opA, type = "prob")[,2],
+         pred_bin = round(pred * 10) / 10) %>% 
+  dplyr::select(pred_bin,pred, midweek) %>% 
+  group_by(pred_bin) %>% 
+  summarise(true_outcome = mean(midweek),
+            n = n()) %>% 
+  ungroup() %>% 
+  ggplot(.) + 
+  geom_point(aes(x=pred_bin, y = true_outcome, size = n), color = 'dodgerblue3') +
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed', color = 'red') + 
+  scale_x_continuous(expand = c(0,0), limits = c(0,.4)) + 
+  scale_y_continuous(expand = c(0,0), limits = c(0,.4)) + 
+  labs(x = 'Predicted Midweek Assignment Probability (Binned)',
+       y = 'Actual Midweek Probability',
+       title = 'Boosted Linear Regression is Well-Calibrated',
+       size = 'N') +
+  theme_bw()
+
+ggsave('/Users/hlukas/Google Drive/Grad School/2021-2022/Spring/CSSS 566/Project/Graphs/mw_prob_boost_cal.png',
+       width = 6,
+       height = 4)
 
 # We now train the model for the points differential (multinomial regression)
 train.opA <- dat %>% 

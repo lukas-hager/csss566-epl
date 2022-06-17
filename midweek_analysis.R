@@ -14,12 +14,12 @@ rm(list = ls())
   if(!require("knitr")){install.packages("knitr")}
   if(!require("CausalGAM")){install.packages("CausalGAM")}
   
-  library(tidyverse)
   library(lubridate)
   library(glmnet)
   library(stargazer)
   library(knitr)
   library(CausalGAM)
+  library(tidyverse)
 }
 
 
@@ -240,8 +240,8 @@ win_probabilities <- data_og %>%
             a = mean(a),
             d = mean(d)) %>% 
   ungroup() %>% 
-  mutate(expected_points_ht = 3*h, 
-         expected_points_at = 3*a)
+  mutate(expected_points_ht = 3*h + d, 
+         expected_points_at = 3*a + d)
 
 
 data_midweek <- data_midweek %>% 
@@ -378,6 +378,15 @@ points_by_midweek <- data_midweek %>%
               mutate(name = str_extract(name, '(home)|(away)')) %>% 
               rename(points = value),
             by = c('id_val', 'name')) %>% 
+  group_by(name, midweek) %>% 
+  summarise(mean_points = mean(points)) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = midweek, values_from = mean_points) %>% 
+  rename('not_midweek' = `0`, 'midweek' = `1`) %>% 
+  kable(format='latex')
+ 
+
+%>% 
   group_by(name, team, midweek) %>% 
   summarise(mean_points = mean(points)) %>% 
   ungroup() %>% 
@@ -545,8 +554,8 @@ win_probabilities <- data_og %>%
             a = mean(a),
             d = mean(d)) %>% 
   ungroup() %>% 
-  mutate(expected_points_ht = 3*h, 
-         expected_points_at = 3*a)
+  mutate(expected_points_ht = 3*h+d, 
+         expected_points_at = 3*a+d)
 
 
 data_midweek <- data_midweek %>% 
@@ -612,6 +621,66 @@ pZ <- ifelse(data_midweek$midweek == 0, 1 - predict(modZ, type = "response"),
                predict(modZ, type = "response"))
 
 # Are these probabilities well calibrated?
+
+stadiums <- read_csv("PL - STADIUMS.csv") %>% 
+  clean_names()
+
+values <- read_csv("PL - VALUE.csv") %>% 
+  clean_names() %>% 
+  left_join(stadiums %>% 
+              select(team, alt_name),
+            by = c("club" = "alt_name"))
+
+val_data <- data_og %>% 
+  mutate(dec_mar = if_else(month(date) %in% c(1, 2,3,  12), 1, 0),
+         wday = wday(date),
+         midweek = if_else(!wday %in% c(1, 2, 7), 1, 0)) %>% 
+  filter(year(date)<=2008) %>% 
+  left_join(stadiums %>% 
+              select(team, capacity, coords),
+            by = c("home_team" = "team")) %>% 
+  separate(coords, into = c("ht_lat", "ht_long"), sep = ",") %>% 
+  left_join(stadiums %>% 
+              select(team,coords),
+            by = c("away_team" = "team")) %>% 
+  separate(coords, into = c("at_lat", "at_long"), sep = ",") %>% 
+  mutate(ht_lat = as.numeric(ht_lat),
+         ht_long = as.numeric(ht_long),
+         at_lat = as.numeric(at_lat),
+         at_long = as.numeric(at_long))
+
+distance <- numeric(nrow(val_data))
+for(i in 1:nrow(val_data)){
+  distance[i] <- distm (c(val_data[i, "ht_long"][[1]], val_data[i, "ht_lat"][[1]]),
+                        c(val_data[i, "at_long"][[1]], val_data[i, "at_lat"][[1]]), 
+                        fun = distHaversine)
+}
+
+
+cbind(val_data, distance) %>% 
+  select(midweek, dec_mar, distance) %>% 
+  na.omit() %>% 
+  mutate(pred = predict(modZ, newdata = ., type = "response"),
+         pred_bin = round(pred * 10) / 10) %>% 
+  select(pred_bin,pred, midweek) %>% 
+  group_by(pred_bin) %>% 
+  summarise(true_outcome = mean(midweek),
+            n = n()) %>% 
+  ungroup() %>% 
+  ggplot(.) + 
+    geom_point(aes(x=pred_bin, y = true_outcome, size = n), color = 'dodgerblue3') +
+    geom_abline(slope = 1, intercept = 0, linetype = 'dashed', color = 'red') + 
+    scale_x_continuous(expand = c(0,0), limits = c(0,.4)) + 
+    scale_y_continuous(expand = c(0,0), limits = c(0,.4)) + 
+    labs(x = 'Predicted Midweek Assignment Probability (Binned)',
+         y = 'Actual Midweek Probability',
+         title = 'Logit Regression is Somewhat Well-Calibrated',
+         size = 'N') +
+    theme_bw()
+
+ggsave('/Users/hlukas/Google Drive/Grad School/2021-2022/Spring/CSSS 566/Project/Graphs/mw_prob_logit_cal.png',
+       width = 6,
+       height = 4)
 
 
 pZ_cal <- case_when(
